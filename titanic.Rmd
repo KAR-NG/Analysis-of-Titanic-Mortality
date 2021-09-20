@@ -9,21 +9,166 @@ output:
 always_allow_html: yes
 ---
 
-## R Packages
+## R PACKAGES
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 library(e1071)
 library(caret)
 library(doSNOW)  # allow training in parallel 
 library(ipred)
 library(xgboost)
+library(skimr)
+library(tidyverse)
 
 ```
 
+## SUMMARY
+
+This is a side project for learning purposes and practicing effective codes and workflows that I learnt from other data scientists. 
+
+## DATA IMPORT
 
 ```{r}
 train.data <- read.csv("train.csv")
-
 train.data
+
 ```
+
+* PassengerId is worse than useless - will be removed.
+* Name is too complicated - will be removed.
+* Ticket is too complicated - will be removed.
+* Cabin doesn't have a lot of data in it - will be removed.
+
+## DATA WRANGLING
+
+### Changing Data type
+
+This section changes appropriate variables into factors to ease exploration, especially to help with the detection of missing values in the dataset. This method helps to identify missing values for categorical variables.
+
+```{r}
+train <- train.data %>% 
+  mutate(Survived = as.factor(Survived),
+         Pclass = as.factor(Pclass),
+         Sex = as.factor(Sex),
+         Cabin = as.factor(Cabin),
+         Embarked = as.factor(Embarked))
+
+```
+
+Using the function "summary".
+
+```{r}
+summary(train)
+
+```
+
+
+Identify that:
+
+* There are 177 missing values in **Age**, annotated with NA'.
+
+* There are 687 missing values in **Cabin**.
+
+* There are 2 missing values for **Embarked**.
+
+
+### Missing-value imputation - Embarked
+
+**Embarked**
+ 
+There are two missing values in the "Embarked" formula. I will use the mode value "s" to impute into these 2 value-missing blanks. The reason being that (1) There are only 2 missing values, (2) the level "S" is overwhelming higher than the other two values. 
+
+```{r}
+train$Embarked[train$Embarked == ""] <- "S"
+
+```
+
+**Age + Tracking column**
+
+Use sophisticated techniques from caret to help decide ages. I will create a tracking column  
+
+```{r}
+
+train$MissingAge <- ifelse(is.na(train$Age), "Yes", "No")
+
+```
+
+*Cabin*
+
+Cabin will not be used for this analysis as there are too many missing values.
+
+
+### Feature Engineering
+
+**Adding variable - FamilySize**
+
+This section will try to create new relevant variables, if there is any. Although I am not sure how effective this new feature will be at prediction in this stage, but I will try it. 
+
+```{r}
+train$FamilitySize <- 1 + train$SibSp + train$Parch 
+
+```
+
+
+
+### Remove variables
+
+Remove PassengerID, Name, Ticket and Cabin. They are irrelevant and redundant to this analysis.
+
+```{r}
+train <- train %>% select(-PassengerId, -Name, -Ticket, -Cabin)
+
+```
+
+### Data transformation
+
+First, transform all features to dummy variables. 
+
+```{r}
+dummy.vars <- dummyVars(~., data = train[, -1])   # Not on the y variable - Survived - Because I am predicting the missing age values base on all column but not base on the y variable column.
+train.dummy <- dummy.vars %>% predict(train[, -1])
+train.dummy <- as_tibble(train.dummy)
+train.dummy
+
+```
+
+
+Now, everything is in dummy variable. 
+
+
+### Missing-value imputation - Age
+
+Using "bag decision tree imputation", it is a computational expensive method but with high predictive power. It only suitable for small dataset to avoid long waiting time. Caret create imputation model for every column and predict the associated missing values. 
+
+```{r}
+pre.process <- preProcess(train.dummy, method = "bagImpute")
+imputed.data <- pre.process %>% predict(train.dummy)
+view(imputed.data)
+
+```
+
+Now, I feed this imputate age column back to the original dataset, and it will become one of the feature that we used to train the XP boost model and the model will figure out in particular age ranges make a difference in predictiving whether you survived or die 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## REFERENCE
+
+https://www.kaggle.com/c/titanic/data?select=gender_submission.csv
+
+https://www.youtube.com/watch?v=z8PRU46I3NY
 
