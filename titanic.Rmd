@@ -125,7 +125,7 @@ train <- train %>% select(-PassengerId, -Name, -Ticket, -Cabin)
 First, transform all features to dummy variables. 
 
 ```{r}
-dummy.vars <- dummyVars(~., data = train[, -1])   # Not on the y variable - Survived - Because I am predicting the missing age values base on all column but not base on the y variable column.
+dummy.vars <- dummyVars(~., data = train[, -1])   # You should exclude respond variable when imputing predictors - reason - you won't have response variable for your new data. 
 train.dummy <- dummy.vars %>% predict(train[, -1])
 train.dummy <- as_tibble(train.dummy)
 train.dummy
@@ -143,24 +143,74 @@ Using "bag decision tree imputation", it is a computational expensive method but
 ```{r}
 pre.process <- preProcess(train.dummy, method = "bagImpute")
 imputed.data <- pre.process %>% predict(train.dummy)
-view(imputed.data)
+imputed.data      # Now missing values in Age has been filled up. 
 
 ```
 
 Now, I feed this imputate age column back to the original dataset, and it will become one of the feature that we used to train the XP boost model and the model will figure out in particular age ranges make a difference in predictiving whether you survived or die 
 
 
+```{r}
+# Overwrite the Age of the original dataset
+
+train$Age <- imputed.data$Age      
+
+```
+
+Now, the data is complete. 
 
 
 
+## MODELING
+ 
+### Create Data Partition
+
+```{r}
+set.seed(54321)
+
+train70 <- createDataPartition(train$Survived,     # Caret calculates relative proportion for y during split 
+                               times = 1,          # I can ask for split more than 1 time, can be 5 or 25 times
+                               p = 0.7,
+                               list = F)            # So you will preserve and left only Row number.
+
+titanic.train <- train[train70, ]
+titanic.test <- train[-train70, ]
 
 
+```
+
+Set up caret to perform 10-fold cross validation repeated 3 times and to use a grid search for optimal model hyperparameter value. CV estimate how well our model will function in production once it is in the real world on brand-new data. It is an estimation process. I can run this random process multiple times, it is more liely to get a better estimate. 
+
+```{r}
+
+train.control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 3, 
+                              search = "grid")  # enable it to do a grid search, go through a collection of parameters and find which ones are optimal, we will show you next section.
 
 
+```
 
+Leverage a grid search of hyperparameters for xgboost. See following presentation for more information: https://www.slideshare.net/odsc/owen-zhangopen-sourcetoolsanddscompetitions1 
 
+```{r}
+tune.grid <- expand.grid(eta = c(0.05, 0.075, 0.1),
+                         nrounds = c(50, 75, 100),
+                         max_depth = 6:8, 
+                         min_child_weight = c(2.0, 2.25, 2.5),
+                         colsample_bytree = c(0.3, 0.4, 0.5),
+                         gamma = 0,
+                         subsample = 1)
 
+# This expand grid function will essentially creates all the permutations of all of these things, in permutations data frame. It is essentially one unique row for all the combinations
 
+tune.grid
+
+```
+
+There are 243 distinct combinations, so now I am asking caret to run 10-fold cross-validation, repeat 3 times, for each one of these 243 potential values. So... 10 * 3 * 243. 
+
+It is kind of exhaustive grid search that might takes day. The more complicated the model, the more knobs and dials, the more likely is you have to do stuff like this. 
 
 
 
