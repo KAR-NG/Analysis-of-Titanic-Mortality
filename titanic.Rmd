@@ -1,0 +1,29 @@
+---
+title: "titanic"
+author: "Kar"
+date: "2021"
+output: 
+  github_document:
+    toc: true
+    toc_depth: 3
+always_allow_html: yes
+---
+
+## R Packages
+
+```{r}
+library(e1071)
+library(caret)
+library(doSNOW)  # allow training in parallel 
+library(ipred)
+library(xgboost)
+
+```
+
+
+```{r}
+train.data <- read.csv("train.csv")
+
+train.data
+```
+
