@@ -1,287 +1,1058 @@
 ---
-title: "titanic"
-author: "Kar"
+title: "Titanic Complete Analysis (Dashboarding + Machine Learning)"
+author: "Kar Ng"
 date: "2021"
 output: 
   github_document:
     toc: true
     toc_depth: 3
 always_allow_html: yes
+
 ---
 
-## R PACKAGES
+###
+
+
+
+###
+
+
+## 1 SUMMARY
+
+
+
+
+## 2 R PACKAGES
 
 ```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(skimr)
+library(corrplot)
 library(e1071)
 library(caret)
 library(doSNOW)  # allow training in parallel 
 library(ipred)
 library(xgboost)
-library(skimr)
-library(tidyverse)
+library(plotly)
+library(highcharter)
+library(leaflet)
+library(leaflet.minicharts)
 
 ```
 
-## SUMMARY
+## 3 INTRODUCTION
 
-This is a side project for learning purposes and practicing effective codes and workflows that I learnt from other data scientists. 
+RMS Titanic was a British passenger liner that sank in the North Atlantic Ocean on 15 April 1912, after striking an iceberg during her voyage from Southampton to New York City (Wikipedia 2021). According to Wikipedia, there was an estimate of 2224 passengers and crew aboard, and the sank has caused estimated 1500 of casualty. This tragic makes the sank of Titanic at the time one of the deadliest of a single ship.
 
-## DATA IMPORT
+In this project, I will analyse a Titanic dataset publicly available from [Kaggle](https://www.kaggle.com/c/titanic). The dataset has information about 1309 of passengers on Titanic and their survivorship (survived, not survived, and missing). 
+
+I will use imputation and machine learning to fill up missing values and predicting the survival of some passengers. I will them use the final table to build an interactive dashboard to analyse and visualise the trends within the dataset. 
+
+
+
+## 4 DATA PREPARATION
+
+### 4.1 Data import
+
+Following codes upload the datasets into R
 
 ```{r}
-train.data <- read.csv("train.csv")
-train.data
+
+# Data import 
+
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+
+# Combine dataset
+
+train <- train %>% 
+  relocate(Survived, .after = Embarked) %>% 
+  mutate(source = "train")
+
+test <- test %>% 
+  mutate(source = "test")
+    
+titanic <- full_join(train, test) 
+
+# write.csv(titanic, "titanic_raw.csv")
+
 
 ```
 
-* PassengerId is worse than useless - will be removed.
-* Name is too complicated - will be removed.
-* Ticket is too complicated - will be removed.
-* Cabin doesn't have a lot of data in it - will be removed.
 
-## DATA WRANGLING
-
-### Changing Data type
-
-This section changes appropriate variables into factors to ease exploration, especially to help with the detection of missing values in the dataset. This method helps to identify missing values for categorical variables.
+Following shows a random draw of 10 rows of information from the imported dataset. We can see many information of a passenger such as Name, Sex, Age, ticket classes, fare and etc. 
 
 ```{r}
-train <- train.data %>% 
-  mutate(Survived = as.factor(Survived),
-         Pclass = as.factor(Pclass),
-         Sex = as.factor(Sex),
-         Cabin = as.factor(Cabin),
-         Embarked = as.factor(Embarked))
+sample_n(titanic, 10) %>% kbl(align = "c") %>% kable_styling(bootstrap_options = "border")
 
 ```
 
-Using the function "summary".
+
+### 4.2 Data description
+
+This table is adapted from [Kaggle](https://www.kaggle.com/c/titanic).
 
 ```{r}
-summary(train)
+
+Variable <- c("PassengerId",
+              "Pclass",
+              "Name",
+              "Sex",
+              "Age",
+              "SibSp",
+              "Parch",
+              "Ticket",
+              "Fare",
+              "Cabin",
+              "Embarked",
+              "Survived",
+              "Source")
+
+Definition <- c("Id of the passenger",
+                "Ticket class: 1 = 1st, 2 = 2nd, 3 = 3rd. It is a A proxy for socio-economic status (SES) with 1st = Upper, 2nd = Middle, 3rd = Lower",
+                "Name of the passenger",
+                "Sex",
+                "Age in years",
+                "# of siblings / spouses aboard the Titanic",
+                "# of parents / children aboard the Titanic",
+                "Ticket number",
+                "Passenger fare",
+                "Cabin number",
+                "Port of Embarkation: C = Cherbourg, Q = Queenstown, S = Southampton",
+                "Survivalship information: 0 = No, 1 = Yes, blank = missing value",
+                "train and test. Train has either survived or not survived recorded, whereas test does not. Machine learning will be used to make the prediction.")
+
+data.frame(Variable, Definition) %>% 
+  kbl() %>% 
+  kable_styling(bootstrap_options = c("bordered", "striped"))
+
+```
+
+### 4.3 Data exploration
+
+There are 1309 rows of observations and 13 columns. There are 6 columns recognised as character type and 7 as numerical type. It is important to change some types into factor during analysis. I will identified columns that need this conversion.
+
+```{r}
+skim_without_charts(titanic)
+
+```
+
+I identified that there are 263 missing values from age, 1 from Fare and 418 from survived. However, there are many missing values in "Cabin" as well, the missing values were recorded with a space rather than having a truely blank, therefore it is not detected.
+
+```{r}
+
+head(titanic$Cabin, 10)
+
+```
+There are 77% of values went missing the column of Cabin, therefore this column will be removed as there are too many missing values in the column.  
+
+```{r}
+
+titanic %>% 
+  dplyr::select(Cabin) %>% 
+  mutate(value = case_when(Cabin == "" ~ "Missing",
+                           TRUE ~ "Not_Missing")) %>% 
+  group_by(value) %>% 
+  summarise(statistics = n()) %>% 
+  mutate(total = sum(statistics),
+         percent = paste0(round(statistics/total * 100), "%"))
+
+
+```
+
+There is a rule of thumb in the market recommending that a column with 60% of missing values and above should be removed during predictive analysis.
+
+Following shows another way of looking at the dataset with types and initial values. 
+
+```{r}
+glimpse(titanic)
 
 ```
 
 
-Identify that:
+## 5 DATA CLEANING
 
-* There are 177 missing values in **Age**, annotated with NA'.
+Identified cleaning tasks:
 
-* There are 687 missing values in **Cabin**.
+* *PasengerId* will be removed, because it adds nothing to the analysis of this project.   
+* *Name* will be removed, because it adds nothing to the analysis of this project. I am not doing text analytics in this project.     
+* *Ticket* will be removed, because it adds nothing to the analysis of this project.     
+* *Cabin* will be removed, because it adds nothing to the analysis of this project.      
+* Convert all remaining character variables into factor.     
+* *Pclass* should be converted into factor.      
+* *Survived* should be converted into factor.  
 
-* There are 2 missing values for **Embarked**.
+### 5.1 Variable removal
+
+Following codes remove PassengerId, Name, Ticket, and Cabin.  
+
+```{r}
+
+titanic <- titanic %>% 
+  dplyr::select(-PassengerId, -Name, -Ticket, -Cabin)
+  
+
+```
+
+### 5.2 Factor conversion
+
+Following codes convert all remaining character variables into factor as well as 
+
+```{r}
+titanic <- titanic %>% 
+  mutate_if(is.character, as.factor) %>% 
+  mutate(Pclass = as.factor(Pclass),
+         Survived = as.factor(Survived))
+
+```
 
 
-### Missing-value imputation - Embarked
+### 5.3 Renaming levels
 
-**Embarked**
+This section renames the levels of many variables. It will not impact on the analysis itself but will help readers to understand the levels better, especially when they are being displayed in the plots. 
+
+```{r}
+
+titanic <- titanic %>% 
+  mutate(Pclass = fct_recode(Pclass,
+                             "1st_class" = "1",
+                             "2nd_class" = "2",
+                             "3rd_class" = "3"),
+         Sex = fct_recode(Sex, 
+                          "Male" = "male",
+                          "Female" = "female"),
+         Embarked = fct_recode(Embarked,
+                               "Cherbourg" = "C",
+                               "Queenstown" = "Q",
+                               "Southampton" = "S"),
+         Survived = fct_recode(Survived,
+                               "Yes" = "1",
+                               "No" = "0"))
+
+
+```
+
+
+### 5.4 Renaming variables
+
+Making all variables' name into lower-case format as there are more than 1 form of format. It will not affect the analysis, but helps to make the table looks more clean and tidy. 
+
+```{r}
+names(titanic) <- tolower(names(titanic))
+
+```
+
+
+
+### 5.5 Imputation 
+
+This section applyes imputation to fill up missing values in the dataset. There are many types of imputation methods including using mean, median, mode (most occurring values, generally applies to categorical data), or either applying advanced models that make use of the entire dataset to predict the missing values. 
+
+
+Missing values are present in the following columns and will need imputation:
+
+* Fare  (Will be imputed with median)
+* Embarked  (Will be imputed with mode)
+* Age  (Will be imputed using imputation model)
+
+```{r}
+summary(titanic)
+
+
+```
+
+Following codes replace the NA's in *Fare* with the overall fare median and 2 of the NA's in *Embarked* with "S", which is the most frequently occurring level. 
+
+```{r, warning=FALSE}
+
+titanic <- titanic %>% 
+  mutate(embarked = as.character(embarked),
+         embarked = na_if(embarked, "")) %>%
+  mutate(fare = replace_na(fare, median(fare, na.rm = T)),       # Impute with median for Fare
+         embarked = replace_na(embarked, "Southampton"),
+         embarked = as.factor(embarked))                   # Impute with mode for Embarked
+
+```
+
+
+
+Following codes complete the imputation of missing values in "Age" using bagged tree algorithm. 
+
+```{r}
+
+# Dummy format conversion because relevant functions from caret "package" does not with categorical data
+
+dummy_function <- dummyVars(~., data = titanic[, -10])   # Exclude "survived" 
+titanic_dummy <- dummy_function %>% predict(titanic[, -10])
+
+# Impute with Bagged tree models
+
+Bagimpute_function <- titanic_dummy %>% preProcess(method = "bagImpute")
+titanic_dummy_impute <- Bagimpute_function %>% predict(titanic_dummy)
+
+# Extract Age from titanic_dummy_impute into titanic table
+
+titanic$age <- titanic_dummy_impute[, 6]
+
+```
+
+
+All missing values in the dataset have been filled up and left with only the column of "Survived" with 418 missing values. This is actually the responding variable of this analysis, and the survivorship of these missing values will be computed via machine learning algorithm in later section. 
+
+```{r}
+summary(titanic)
+
+```
+Clean up the Age, the numeric in age column shouldn't has floating numbers and therefore I am rounding up those imputed values since they are an estimate.
+
+```{r}
+titanic <- titanic %>% 
+  mutate(age = round(age))
+
+```
+
+
+
+### 5.6 Round the Fare
+
+Since the unit of fare often comes with 2 floating numbers, I will transform decimal places of "fare" from 4 into 2.
+
+```{r}
+titanic <- titanic %>% 
+  mutate(fare = round(fare, 2))
+
+```
+
+
+### 5.7 Feature Engineering
+
+Since "SibSp" (number of siblings or spouses) and "Parch" (parents or children) are the total number of family a passenger was with, and a combination of them would create a new variable "familysize". 
+
+```{r}
+titanic <- titanic %>% 
+  mutate(familysize = sibsp + parch) %>% 
+  relocate(familysize, .after = parch)
+
+```
+
+
+Grouping different ranges of age into "age_group" of kid, teenage, adult, and elder.
+
+```{r}
+
+titanic <- titanic %>% mutate(age_group = case_when(age <= 12 ~ "Kid",
+                                                    age >= 13 & age <= 19 ~ "Teenage",
+                                                    age >= 20 & age <= 65 ~ "Adult",
+                                                    age >= 66 ~ "Elder"),
+         age_group = factor(age_group, levels = c("Kid", "Teenage", "Adult", "Elder"))) %>% 
+         relocate(age_group, .after = age)
+
+```
+
+The dataset has now been cleaned.
+
+
+## 6 MACHINE LEARNING
  
-There are two missing values in the "Embarked" formula. I will use the mode value "s" to impute into these 2 value-missing blanks. The reason being that (1) There are only 2 missing values, (2) the level "S" is overwhelming higher than the other two values. 
-
-```{r}
-train$Embarked[train$Embarked == ""] <- "S"
-
-```
-
-**Age + Tracking column**
-
-Use sophisticated techniques from caret to help decide ages. I will create a tracking column  
-
-```{r}
-
-train$MissingAge <- ifelse(is.na(train$Age), "Yes", "No")
-
-```
-
-*Cabin*
-
-Cabin will not be used for this analysis as there are too many missing values.
-
-
-### Feature Engineering
-
-**Adding variable - FamilySize**
-
-This section will try to create new relevant variables, if there is any. Although I am not sure how effective this new feature will be at prediction in this stage, but I will try it. 
-
-```{r}
-train$FamilitySize <- 1 + train$SibSp + train$Parch 
-
-```
-
-
-
-### Remove variables
-
-Remove PassengerID, Name, Ticket and Cabin. They are irrelevant and redundant to this analysis.
-
-```{r}
-train <- train %>% select(-PassengerId, -Name, -Ticket, -Cabin)
-
-```
-
-### Data transformation
-
-First, transform all features to dummy variables. 
-
-```{r}
-dummy.vars <- dummyVars(~., data = train[, -1])   # You should exclude respond variable when imputing predictors - reason - you won't have response variable for your new data. 
-train.dummy <- dummy.vars %>% predict(train[, -1])
-train.dummy <- as_tibble(train.dummy)
-train.dummy
-
-```
-
-
-Now, everything is in dummy variable. 
-
-
-### Missing-value imputation - Age
-
-Using "bag decision tree imputation", it is a computational expensive method but with high predictive power. It only suitable for small dataset to avoid long waiting time. Caret create imputation model for every column and predict the associated missing values. 
-
-```{r}
-pre.process <- preProcess(train.dummy, method = "bagImpute")
-imputed.data <- pre.process %>% predict(train.dummy)
-imputed.data      # Now missing values in Age has been filled up. 
-
-```
-
-Now, I feed this imputate age column back to the original dataset, and it will become one of the feature that we used to train the XP boost model and the model will figure out in particular age ranges make a difference in predictiving whether you survived or die 
+There are 418 passengers do not have their survivorship recorded in the dataset, I will predict their survivorship using relevant data in the dataset with the aid of machine learning algorithms. 
 
 
 ```{r}
-# Overwrite the Age of the original dataset
-
-train$Age <- imputed.data$Age      
+summary(titanic$survived)
 
 ```
 
-Now, the data is complete. 
+There will be 3 ways splitting the dataset.  
+
+Splitting the dataset into two datasets, one with survivorship and one without survivorship. I will use the one with survivorship 
+
+```{r}
+
+titanic_with_survivorship <- titanic %>% 
+  filter(source == "train") %>% 
+  dplyr::select(-source)
+
+titanic_without_survivorship <- titanic %>% 
+  filter(source == "test") %>% 
+  dplyr::select(-source)
 
 
+```
 
-## MODELING
+Split out the one with survival information into 80% train set and 20% test set.  
+
+```{r}
+
+set.seed(123)
+
+# Create data partition 
+
+training.set <- titanic_with_survivorship$survived %>% createDataPartition(p = 0.8, list = F)
+
+# Get train and test test
+
+train.set <- titanic_with_survivorship[training.set, ]
+  
+test.set <- titanic_with_survivorship[-training.set, ]
+
+
+```
+
+### 6.1 K-Nearest Neightbors (KNN)
+
+This section trains a non-parametric algorithm, KNN, on the train set and make predictions on the test set.
+
+```{r}
+
+model_knn <- train(survived ~., data = train.set,
+                   method = "knn",
+                   trControl = trainControl(method = "repeatedcv", 
+                                            number = 10,
+                                            repeats = 3),
+                   preProcess = c("center", "scale")
+                   )
+
+plot(model_knn)
+
+```
+
+According to graph above and following function, the best K is 9. It will automatically selected as the default K value when this KNN model is used for predictions. 
+
+```{r}
+model_knn$bestTune
+
+```
+
+Applying the KNN model to make predictions on the test set and evaluate its predictive performance (accuracy, %).
+
+```{r}
+# Make predictions
+
+prediction_knn <- model_knn %>% predict(test.set)
+
+# Test performance
+
+mean(prediction_knn == test.set$survived)
+
+```
+Confusion matrix to check on other performance metrics of this model.
+
+```{r}
+
+CM <- confusionMatrix(prediction_knn, test.set$survived)
+CM
+```
+
+
+### 6.2 Random Forest
+
+This section applies random forest algoritm on the train set and make predictions on the test test.
+
+```{r}
+set.seed(123)
+
+model_rf <- train(survived ~., data = train.set,
+                   method = "rf",
+                   trControl = trainControl(method = "repeatedcv", 
+                                            number = 10,
+                                            repeats = 3),
+               importance = TRUE,
+               tuneLength = 9
+                   )
+
+```
+
+Making the predictions based on random forest model and evaluate its performance. 
+
+```{r}
+
+# Make predictions
+
+prediction_rf <- model_rf %>% predict(test.set)
+  
+# Test performance
+
+mean(prediction_rf == test.set$survived)
+
+```
+Confusion matrix to check on other performance metrics of this model.
+
+```{r}
+
+confusionMatrix(prediction_rf, test.set$survived)
+
+```
+
+### 6.3 Xgboosts 
+
+This section applies extreme-gradient boosting, which is an alternative to random forest.
+
+Building the model with following codes.
+
+```{r, warning=FALSE}
+
+set.seed(123)
+
+# Tuning
+
+my_tunes <- expand.grid(eta = c(0.05, 0.075, 0.1),
+                        nrounds = c(50, 75, 100),
+                        max_depth = 6:8, 
+                        min_child_weight = c(2.0, 2.25, 2.5),
+                        colsample_bytree = c(0.3, 0.4, 0.5),
+                        gamma = 0,
+                        subsample = 1)
+
+# Initiate parallel computing to speed up boosting process
+
+my_cluster <- makeCluster(5, type = "SOCK")
+registerDoSNOW(my_cluster)
+
+# Build the model
+
+model_xgb <- train(survived ~., data = train.set,
+                   method = "xgbTree",
+                   trControl = trainControl(method = "repeatedcv", 
+                                            number = 10,
+                                            repeats = 3,
+                                            search = "grid"),
+                   tuneGrid = my_tunes)
+
+# Stop my_cluster
+
+stopCluster(my_cluster)
+
+```
+Making the predictions based on random forest model and evaluate its performance. 
+
+```{r}
+# Make predictions
+
+prediction_xgb <- model_xgb %>% predict(test.set)
+  
+# Test performance
+
+mean(prediction_xgb == test.set$survived)
+
+```
+Confusion matrix to check on other performance metrics of this model.
+
+```{r}
+
+confusionMatrix(prediction_xgb, test.set$survived)
+
+```
+
+### 6.4 Model comparison
+
+I will use the KNN model to make prediction on the new dataset that do not have survivorship recorded because KNN model has the highest accuracy, sensitivity, and specificity. 
+
+```{r}
+
+tests <- c("Model_knn", "Model_rf", "Model_xgb")
+
+accuracy <- c(mean(prediction_knn == test.set$survived),
+              mean(prediction_rf == test.set$survived),
+              mean(prediction_xgb == test.set$survived))
+
+sensitivity <- c(0.9083, 0.8899, 0.8899)
+
+specificity <- c(0.7059, 0.6765, 0.7059)
+
  
-### Create Data Partition
 
-```{r}
-set.seed(54321)
+# Data frame
 
-train70 <- createDataPartition(train$Survived,     # Caret calculates relative proportion for y during split 
-                               times = 1,          # I can ask for split more than 1 time, can be 5 or 25 times
-                               p = 0.7,
-                               list = F)            # So you will preserve and left only Row number.
-
-titanic.train <- train[train70, ]
-titanic.test <- train[-train70, ]
+model_compare <- data.frame(tests, accuracy, sensitivity, specificity)
 
 
-```
+# Data transform
 
-Set up caret to perform 10-fold cross validation repeated 3 times and to use a grid search for optimal model hyperparameter value. CV estimate how well our model will function in production once it is in the real world on brand-new data. It is an estimation process. I can run this random process multiple times, it is more liely to get a better estimate. 
+df6.4 <- model_compare %>% 
+  pivot_longer(c(2:4), names_to = "metric", values_to = "values")
 
-```{r}
+# plot
 
-train.control <- trainControl(method = "repeatedcv",
-                              number = 10,
-                              repeats = 3, 
-                              search = "grid")  # enable it to do a grid search, go through a collection of parameters and find which ones are optimal, we will show you next section.
+ggplot(df6.4, aes(x = metric, y = values, fill = tests)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = round(values, 2)), position = position_dodge(width = 0.9), vjust = -0.7) +
+  theme_bw() +
+  labs(x = "Metric",
+       y = "Values",
+       fill = "Model",
+       title = "Model_KNN has the best accuracy, sensitivity, and third-place in specificity") +
+  scale_y_continuous(lim = c(0, 1))
 
-
-```
-
-Leverage a grid search of hyperparameters for xgboost. See following presentation for more information: https://www.slideshare.net/odsc/owen-zhangopen-sourcetoolsanddscompetitions1 
-
-```{r}
-tune.grid <- expand.grid(eta = c(0.05, 0.075, 0.1),
-                         nrounds = c(50, 75, 100),
-                         max_depth = 6:8, 
-                         min_child_weight = c(2.0, 2.25, 2.5),
-                         colsample_bytree = c(0.3, 0.4, 0.5),
-                         gamma = 0,
-                         subsample = 1)
-
-# This expand grid function will essentially creates all the permutations of all of these things, in permutations data frame. It is essentially one unique row for all the combinations
-
-tune.grid 
-
-```
-
-There are 243 distinct combinations, so now I am asking caret to run 10-fold cross-validation, repeat 3 times, for each one of these 243 potential values. So... 10 * 3 * 243. 
-
-It is kind of exhaustive grid search that might takes day. The more complicated the model, the more knobs and dials, the more likely is you have to do stuff like this. 
-
-Use the doSNOW package to enable caret to train in *parallel* (Do things at the same time). While there are many package options in the space, doSNOW has the advantage of working on both Windows and Mac OS X.
-
-Create a socket cluster using 10 processes
-
-**NOTE** - Tune this number based on the number of cores/threads available on your machine!!!
-
-```{r}
-CI <- makeCluster(3, type = "SOCK")    # Use 10 if you have great computer, small laptop use 3.
   
 ```
 
-Register cluster so that caret will know to train in parellel. 
+
+## 7 PREDICTIONS 
+
+A quick recap, my dataset has 1309 rows, and there are 418 passengers with their survivorship missing. We do not know whether they are survived or not survived. Therefore, I trained 3 machine learning algorithms and found that the KNN model had the best predictive power. 
+
+Therefore, I will use the KNN model to predict the survivorship of these 418 passengers to obtain a final cleaned dataset for dashboarding. 
+
+Making the prediction with following codes.
 
 ```{r}
-registerDoSNOW(CI)
+
+predicted <- model_knn %>% predict(titanic_without_survivorship)
+
+predicted
+
+```
+Data insert.
+
+```{r}
+
+titanic_without_survivorship$survived <- predicted
 
 ```
 
-Train the xgboost model using 10-fold CV repeated 3 yimrd snf s hypermeter grid search to train the optimal model.
+Combine both titanic tables.
 
 ```{r}
-caret.cv <- train(Survived ~., 
-                  data = titanic.train,
-                  method = "xgbTree",
-                  tuneGrid = tune.grid,
-                  trControl = train.control)
+titanic_without_survivorship
+titanic_with_survivorship
 
-stopCluster(CI)
+titanic_final <- rbind(titanic_without_survivorship, titanic_with_survivorship)
+
+
+```
+Final check the dataset:
+
+```{r}
+summary(titanic_final)
+
+```
+There are no more missing values from the dataset and is now ready for visualisation.
+
+Saving the file.
+
+```{r}
+
+#write.csv(titanic_final, "titanic_final.csv")
 
 ```
 
-Examine caret's processing result
 
-```{r}
-caret.cv
-
-```
-
-The bottom says which tuning value is the best. Nice one.
-
-```{r}
-preds <- caret.cv %>% predict(titanic.test)
-
-```
-
-Use caret confusionMatrix()vfunction to estimate the effectiveness of this model on unseen, new data
+## 8 VISUALISATION
 
 
 ```{r}
-confusionMatrix(preds, titanic.test$Survived)
+
+tf <- titanic_final
 
 ```
-Sensitivity: Left side of the table
-Specificity: Right side of the table
 
-Sensitivity and specificity important to tell how you feature engineering is. 
+### 8.1 Passengers across Classes 
 
-* You are right now very good at sensitivity, which means has the right feature to classify who die (0).
+There are 1309 rows of passengers information, among them, there are 323 passengers bought the first class ticket, 277 for second class ticket, and 709 for third class ticket. 
 
-* Now you rework features engineering to improve specificity, to rework variables that help to identify who survive (1), because you have room for improvement in specificity. 
+```{r}
+
+# df
+
+df8.1 <- tf %>% 
+  group_by(pclass) %>% 
+  summarise(count = n())
+
+```
+
+
+```{r, warning=FALSE}
+
+plot_ly(df8.1,
+        labels = ~pclass,
+        values = ~count,
+        type = "pie", 
+        textinfo = "label+percent",
+        textposition = "inside",
+        textfont = list(color = "White", size = 30),
+        marker = list(line = list(color = "White", width = 2)), 
+        showlegend = FALSE) %>% 
+  layout(title = "Passenger Counts by Ticket Classes")
+
+
+```
+
+
+### 8.2 Passengers from Each Port
+
+Following table shows the number of passengers boarded in eacn port in the dataset.
+
+```{r, warning=FALSE}
+# df of location
+
+embarked <- c("Cherbourg", "Queenstown", "Southampton")
+long <- c(-1.620000,  -8.299167, -1.404351)
+lat <- c(49.630001, 51.857222, 50.909698)
+
+port_loc <- data.frame(long, lat, embarked)
+  
+# merge to tf
+
+df8.2 <- tf %>% 
+  group_by(embarked, pclass) %>% 
+  summarise(count = n()) %>% 
+  left_join(port_loc, by = "embarked") %>% 
+  ungroup() %>%
+  group_by(embarked) %>% 
+  mutate(embarked_total = sum(count)) %>% 
+  pivot_wider(values_from = count, names_from = pclass)
+
+# plot
+
+leaflet() %>% 
+  addTiles(group = "OpenStreetMap (Default)") %>% 
+  addProviderTiles(providers$Esri.WorldImagery, group = "Esri") %>%
+  addProviderTiles(providers$Stamen.TonerLite, group = "Toner Lite") %>%  
+  setView(lng = -4.143841, lat = 50.376289, zoom = 6) %>% 
+  addMinicharts(df8.2$long, df8.2$lat,
+                chartdata = df8.2$embarked_total,
+                width =  4 * sqrt(df8.2$embarked_total),
+                showLabels = T,
+                fill = "orange",
+                opacity = 0.8) %>% 
+  addLabelOnlyMarkers(group = "city",
+                      data = df8.2,
+                      lat = ~ lat, 
+                      lng = ~ long,
+                      label = ~ embarked,
+                      labelOptions = labelOptions(noHide = T, textOnly = F, textsize = 20, opacity = 0.8)) %>% 
+  addLayersControl(baseGroups = c("Esri", "Street Map", "Toner Lite"),
+                   overlayGroups = c("city"),
+                   options = layersControlOptions(collapsed = F))
+
+
+```
+
+Following map shows the proportion of various ticket-class holders from each port. 
+
+```{r, warning=FALSE}
+
+leaflet() %>% 
+  addTiles(group = "OpenStreetMap (Default)") %>% 
+  addProviderTiles(providers$Esri.WorldImagery, group = "Esri") %>%
+  addProviderTiles(providers$Stamen.TonerLite, group = "Toner Lite") %>% 
+  setView(lng = -4.143841, lat = 50.376289, zoom = 6) %>% 
+  addMinicharts(df8.2$long, df8.2$lat,
+                type = "pie",
+                chartdata = df8.2[, c("1st_class", "2nd_class", "3rd_class")],
+                width = 3*sqrt(df8.2$embarked_total),
+                colorPalette = c("black", "lightgreen", "blue"),
+                opacity = 0.9) %>% 
+  addLabelOnlyMarkers(group = "Total Passenger",
+                      data = df8.2,
+                      lat = ~ lat,
+                      lng = ~ long,
+                      label = ~ paste0("Total: ", as.character(embarked_total)),
+                      labelOptions = labelOptions(noHide = T, textsize = 20, textOnly = F)) %>% 
+  addLabelOnlyMarkers(group = "city",
+                      data = df8.2,
+                      lat = ~ lat, 
+                      lng = ~ long,
+                      label = ~ embarked,
+                      labelOptions = labelOptions(noHide = T, textOnly = F, textsize = 20, opacity = 0.8)) %>% 
+  addLayersControl(baseGroups = c("Street Map", "Esri", "Toner Lite"),
+                   overlayGroups = c("city", "Total Passenger"),
+                   options = layersControlOptions(collapsed = F))
+
+
+```
+
+### 8.3 Ticket Prices
+
+There is no much information about how ticket prices are determined. Following plot shows that generally a higher class ticket is more expensive. 
+
+```{r, warning=FALSE}
+
+df8.3 <- ggplot(tf, aes(y = fare, x = pclass)) +
+  geom_boxplot() +
+  geom_jitter(size = 3, alpha = 0.4, shape = 21, colour = "grey") +
+  labs(x = "Ticket Classes",
+       y = "Fare") + 
+  stat_summary(fun = "mean", geom = "point", size = 6, stroke = 1, shape = 4, colour = "blue") +
+  theme_bw()
+
+
+ggplotly(df8.3)
+
+```
+
+
+### 8.4 Family Sizes
+
+There are a lot of big families in third-class ticket group. 
+
+```{r, warning=FALSE}
+
+plot8.4 <- ggplot(tf, aes(x = sex, y = age, fill = age_group, size = familysize)) +
+  geom_jitter(alpha = 0.5, shape = 21, width = 0.3) +
+  facet_wrap(~pclass) +
+  scale_size(range = c(0, 6)) +
+  theme_bw()
+
+
+ggplotly(plot8.4)
+
+
+
+```
+
+
+### 8.5 Mortality - Social Classes
+
+The mortality in the third class group was the highest at 76%, 57% for the middle class group, and 37% for the first class ticket group.
+
+```{r, warning=FALSE}
+
+# df
+
+df8.5 <- tf %>% 
+  group_by(pclass, survived) %>% 
+  summarise(count = n()) %>% 
+  group_by(pclass) %>% 
+  mutate(pclass_sum = sum(count), 
+         percent = paste0(round(count/pclass_sum * 100, 0), "%"))
+
+# plot 
+
+plot8.5 <- ggplot(df8.5, aes(x = pclass, y = count, fill = survived)) +
+  geom_bar(stat = "identity", alpha = 0, size = 1, aes(colour = survived), width = 0.6) +
+  geom_text(aes(label = percent, colour = survived), position = position_stack(vjust = 0.5), size = 6) +
+  theme_minimal() +
+  labs(x = "Ticket class", y = "Survival Count",
+       title = "Mortality: Social Class") +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold"),
+        panel.grid = element_blank(),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0))
+      ) +
+  scale_colour_manual(values = c("red", "green3")) 
+
+ggplotly(plot8.5) 
+
+
+
+```
+
+
+### 8.6 Mortality - Genders
+
+Gender-wise, 84% of male and 24% for female died from this sank.
+
+```{r, warning=FALSE}
+
+# df
+
+df8.6 <- tf %>% 
+  group_by(sex, survived) %>% 
+  summarise(count = n()) %>% 
+  group_by(sex) %>% 
+  mutate(sex_sum = sum(count), 
+         percent = paste0(round(count/sex_sum * 100, 0), "%"))
+
+# plot
+
+plot8.6 <- ggplot(df8.6, aes(x = sex, y = count, fill = survived)) +
+  geom_bar(stat = "identity", alpha = 0, size = 1, aes(colour = survived), width = 0.6) +
+  geom_text(aes(label = percent, colour = survived), position = position_stack(vjust = 0.5), size = 6) +
+  theme_minimal() +
+  labs(x = "Sex", y = "Survival Count", 
+       title = "Mortality: Sex") +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title = element_text(face = "bold"),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0))
+      ) +
+  scale_colour_manual(values = c("red", "green3")) 
+
+ggplotly(plot8.6) 
+
+
+```
+
+
+
+### 8.7 Mortality - Age Group
+
+On age groups, 47% of children, 57% of teenagers, 65% of adults, and 90% of elders died from this sank.
+
+
+```{r,warning=FALSE}
+
+# df
+
+df8.7 <- tf %>% 
+  group_by(age_group, survived) %>% 
+  summarise(count = n()) %>% 
+  group_by(age_group) %>% 
+  mutate(age_group_sum = sum(count), 
+         percent = paste0(round(count/age_group_sum * 100, 0), "%"))
+  
+
+# plot
+
+
+plot8.7 <- ggplot(df8.7, aes(x = age_group, y = count, fill = survived)) +
+  geom_bar(stat = "identity", alpha = 0, size = 1, aes(colour = survived), width = 0.6) +
+  geom_text(aes(label = percent, colour = survived), position = position_stack(vjust = 0.5), size = 5) +
+  theme_minimal() +
+  labs(x = "Sex", y = "Survival Count",
+       title = "Mortality: Age Group") +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title = element_text(face = "bold"),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0))
+      ) +
+  scale_colour_manual(values = c("red", "green3")) 
+
+ggplotly(plot8.7) 
+
+
+
+```
+
+### 8.8 Mortality - Port
+
+All ports had passenger casualty close to and more than 50%. 
+
+```{r, warning=FALSE}
+
+# df
+
+df8.8 <- tf %>% 
+  group_by(embarked, survived) %>% 
+  summarise(count = n()) %>% 
+  group_by(embarked) %>% 
+  mutate(embarked_sum = sum(count), 
+         percent = paste0(round(count/embarked_sum * 100, 0), "%"))
+
+# plot
+
+plot8.8 <- ggplot(df8.8, aes(x = embarked, y = count, fill = survived)) +
+  geom_bar(stat = "identity", alpha = 0, size = 1, aes(colour = survived), width = 0.6) +
+  geom_text(aes(label = percent, colour = survived), position = position_stack(vjust = 0.5), size = 5) +
+  theme_minimal() +
+  labs(x = "Sex", y = "Survival Count",
+       title = "Mortality: Port") +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title = element_text(face = "bold"),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0))
+      ) +
+  scale_colour_manual(values = c("red", "green3")) 
+
+ggplotly(plot8.8) 
+
+
+
+```
+
+### 8.9 Mortality: Overall
+
+The overall casuality is 62%. 
+
+```{r, warning=FALSE}
+
+# df
+
+df8.9 <- tf %>% 
+  group_by(survived) %>% 
+  summarise(count = n()) %>% 
+  mutate(embarked_sum = sum(count), 
+         percent = paste0(round(count/embarked_sum * 100, 0), "%"))
+
+# plot
+
+plot8.9 <- ggplot(df8.9, aes(x = survived, y = count, fill = survived)) +
+  geom_bar(stat = "identity", alpha = 0, size = 1, aes(colour = survived), width = 0.6) +
+  geom_text(aes(label = percent, colour = survived), position = position_stack(vjust = 0.5), size = 5) +
+  theme_minimal() +
+  labs(x = "Sex", y = "Survival Count",
+       title = "Mortality: embarked") +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title = element_text(face = "bold"),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0))
+      ) +
+  scale_colour_manual(values = c("red", "green3")) 
+
+ggplotly(plot8.9) 
+
+
+
+```
+
+### 8.10 Death Group Analysis
+
+Adult male passengers holding the 3rd class ticket had the highest death rate.
+
+```{r, warning=FALSE}
+
+# df
+
+death_group <- tf %>% 
+  dplyr::filter(survived == "No") %>% 
+  dplyr::select(-age, -sibsp, -parch, -familysize, -fare)
+
+# plot
+
+plot8.10 <- ggplot(death_group, aes(x = age_group, fill = sex)) + 
+  geom_histogram(stat = "count", position = position_dodge()) +
+  facet_grid(~pclass) +
+  theme_bw() +
+  theme(axis.title.x = element_text(margin = margin(10, 0, 0, 0)),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0))) +
+  labs(x = "Age Group",
+       y = "Death Count",
+       title = "Analysing the Death Group")
+
+
+
+ggplotly(plot8.10)
+
+```
+
+
+
+## 9 CONCLUSION
+
+From this dataset, 
+
+* There was 62% of passengers died from the sank
+
+* The death rate was the highest in 3rd class ticket passengers, which is a proxy for socio-economic status.
+
+* The death rate was the highest in male, adult group. 
+
+* 76% of 3rd class ticket passengers, 57% of 2nd class ticket passengers, and 37% of 1st class ticket passengers diead from the sank. 
+
+* 47% of children, 57% of teenagers, 65% of adults, and 90% of elders died from this sank.
 
 
 
 
 
+**Thank you for reading**
 
 
-## REFERENCE
+## 10 REFERENCE
 
-https://www.kaggle.com/c/titanic/data?select=gender_submission.csv
+Dave Langer 2017, *Intro to Machine Learning with R & caret*, Data Science Dojo, Viewed 22 October 2021, https://www.youtube.com/watch?v=z8PRU46I3NY&t=1492s
 
-https://www.youtube.com/watch?v=z8PRU46I3NY
+Kaggle 2021, *Titanic - Machine Learning from Disaster*, viewed 22 October 2021, https://www.kaggle.com/c/titanic/data?select=gender_submission.csv
+
+"Untergang der Titanic", By Willy Stöwer - Magazine Die Gartenlaube, en:Die Gartenlaube and de:Die Gartenlaube, Public Domain, https://commons.wikimedia.org/w/index.php?curid=97646
+
+Titanic 2021, *https://en.wikipedia.org/wiki/Titanic*, viewed 24 October 2021, https://en.wikipedia.org/wiki/Titanic
+
 
