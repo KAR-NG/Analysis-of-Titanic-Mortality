@@ -12,7 +12,7 @@ always_allow_html: yes
 
 ###
 
-
+![](https://raw.githubusercontent.com/KAR-NG/titanic/main/pic1_thumbnail.png?token=ATPXDBGSSKMJVZS6VQ6F7OTBPBZ54)
 
 ###
 
